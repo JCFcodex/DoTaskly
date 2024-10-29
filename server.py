@@ -123,6 +123,7 @@ def delete_task(task_id):
         print(f"Error deleting task: {str(e)}")
         return jsonify({'error': 'Failed to delete task'}), 500
 
-if __name__ == '__main__':
+if __name__ == "__main__":
+    port = int(os.getenv("PORT", 5000))
     init_db()
-    app.run(port=5000, debug=True)
+    app.run(host="0.0.0.0", port=port, debug=False)
