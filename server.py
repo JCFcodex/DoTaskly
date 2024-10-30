@@ -1,15 +1,28 @@
-from flask import Flask, request, jsonify, send_from_directory
+from flask import Flask, request, jsonify, send_from_directory, make_response
 from flask_cors import CORS
-import sqlite3
 from datetime import datetime
+import sqlite3
 import uuid
 import os
 
 app = Flask(__name__, static_folder='dist', static_url_path='')
-CORS(app)
+CORS(app, supports_credentials=True)
 
-def init_db():
-    conn = sqlite3.connect('tasks.db')
+def get_or_create_user_id():
+    user_id = request.cookies.get('user_id')
+    if not user_id:
+        user_id = str(uuid.uuid4())
+    return user_id
+
+def get_user_db_path(user_id):
+    # Create user_databases directory if it doesn't exist
+    if not os.path.exists('user_databases'):
+        os.makedirs('user_databases')
+    return f'user_databases/tasks_{user_id}.db'
+
+def init_user_db(user_id):
+    db_path = get_user_db_path(user_id)
+    conn = sqlite3.connect(db_path)
     c = conn.cursor()
     c.execute('''
         CREATE TABLE IF NOT EXISTS tasks
@@ -19,17 +32,41 @@ def init_db():
          completed BOOLEAN NOT NULL DEFAULT 0,
          created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP)
     ''')
+    
+    # Check if this is a new database (no tasks exist)
+    c.execute('SELECT COUNT(*) FROM tasks')
+    count = c.fetchone()[0]
+    
+    if count == 0:
+        # Create welcome task
+        welcome_task = {
+            'id': str(uuid.uuid4()),
+            'title': 'Welcome to DoTaskly!',
+            'description': "This is your first task. Tap the + button below to add new tasks and start organizing your day with DoTaskly. You can edit, complete, or delete tasks as needed!",
+            'completed': False
+        }
+        c.execute(
+            'INSERT INTO tasks (id, title, description, completed) VALUES (?, ?, ?, ?)',
+            (welcome_task['id'], welcome_task['title'], welcome_task['description'], welcome_task['completed'])
+        )
+    
     conn.commit()
     conn.close()
 
 @app.route('/')
 def serve():
-    return send_from_directory(app.static_folder, 'index.html')
+    response = make_response(send_from_directory(app.static_folder, 'index.html'))
+    user_id = get_or_create_user_id()
+    # Set cookie that never expires
+    response.set_cookie('user_id', user_id, max_age=315360000, httponly=True, samesite='Strict')
+    init_user_db(user_id)
+    return response
 
 @app.route('/api/tasks', methods=['GET'])
 def get_tasks():
     try:
-        conn = sqlite3.connect('tasks.db')
+        user_id = get_or_create_user_id()
+        conn = sqlite3.connect(get_user_db_path(user_id))
         c = conn.cursor()
         c.execute('SELECT * FROM tasks ORDER BY created_at DESC')
         tasks = []
@@ -50,9 +87,10 @@ def get_tasks():
 @app.route('/api/tasks', methods=['POST'])
 def create_task():
     try:
+        user_id = get_or_create_user_id()
         data = request.json
         task_id = str(uuid.uuid4())
-        conn = sqlite3.connect('tasks.db')
+        conn = sqlite3.connect(get_user_db_path(user_id))
         c = conn.cursor()
         c.execute(
             'INSERT INTO tasks (id, title, description, completed) VALUES (?, ?, ?, ?)',
@@ -78,8 +116,9 @@ def create_task():
 @app.route('/api/tasks/<task_id>', methods=['PATCH'])
 def update_task(task_id):
     try:
+        user_id = get_or_create_user_id()
         data = request.json
-        conn = sqlite3.connect('tasks.db')
+        conn = sqlite3.connect(get_user_db_path(user_id))
         c = conn.cursor()
         
         if 'completed' in data:
@@ -113,7 +152,8 @@ def update_task(task_id):
 @app.route('/api/tasks/<task_id>', methods=['DELETE'])
 def delete_task(task_id):
     try:
-        conn = sqlite3.connect('tasks.db')
+        user_id = get_or_create_user_id()
+        conn = sqlite3.connect(get_user_db_path(user_id))
         c = conn.cursor()
         c.execute('DELETE FROM tasks WHERE id = ?', (task_id,))
         conn.commit()
@@ -125,5 +165,4 @@ def delete_task(task_id):
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
-    init_db()
     app.run(host="0.0.0.0", port=port, debug=False)
